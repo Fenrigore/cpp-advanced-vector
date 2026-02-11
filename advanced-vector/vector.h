@@ -136,24 +136,15 @@ public:
 				Swap(rhs_copy);
 			}
 			else {
-				//Размер вектора - источника меньше размера вектора - приёмника
+				//копируем до меньшей величины (тут уже супер-читабельно, 
+				//думаю можно не выносить в отдельный приват-метод)
+				std::copy(rhs.begin(), rhs.begin() + std::min(rhs.size_, size_), begin());
+				//и смотря что меньше, то либо уничтожаем лишнее
 				if (rhs.size_ < size_) {
-					//копируем все элеиенты из rhs.data_	
-					for (size_t i = 0; i < rhs.size_; ++i) {
-						*(begin() + i) = *(rhs.begin() + i);
-					}
-					//не перезаписанные, а значит лишние, уничтожаем
 					std::destroy_n(begin() + rhs.size_, size_ - rhs.size_);
-				}//если больше или равен
+				}//либо инициализируем копии в сырой памяти
 				else {
-					//тут минималка - размер this вектора, проходим по нему
-					for (size_t i = 0; i < size_; ++i) {
-						*(begin() + i) = *(rhs.begin() + i);
-					}
-					//а дальше копируем в свободную область
-					std::uninitialized_copy((rhs.begin() + size_)
-						, (rhs.end()), end());
-
+					std::uninitialized_copy((rhs.begin() + size_), (rhs.end()), end());
 				}
 				size_ = rhs.size_;
 			}
@@ -211,9 +202,7 @@ public:
 		//если уменьшаем
 		if (new_size < size_) {
 			//то удаляем элементы, у которых позиция больше нового размера
-			for (size_t i = new_size; i < size_; ++i) {
-				(begin() + i)->~T();
-			}
+			std::destroy_n(begin() + new_size, size_ - new_size);
 		}//если увеличиваем
 		else if (new_size > size_) {
 			//бронируем больше памяти, если надо
@@ -274,7 +263,7 @@ public:
 
 	template <typename... Args>
 	iterator Emplace(const_iterator pos, Args&&... args) {
-
+		assert(pos >= begin() && pos <= end());
 		T* iter = const_cast<T*>(pos);
 
 		//если места недостаточно
@@ -288,6 +277,7 @@ public:
 			size_t index_from_pos = static_cast<size_t>(iter - begin());
 			//std::cout << "index_from_pos = " << index_from_pos << std::endl;
 			iter = new_data.GetAddress() + index_from_pos;
+			bool before_pos_is_initialized = false; //это для чистки
 			//копирую в новую память
 			//тут если что автоматически при неудаче удалится объект и бросится исключение
 			//а RawMemory сам удалит память
@@ -296,18 +286,29 @@ public:
 				if constexpr (!std::is_copy_constructible_v<T> || std::is_nothrow_move_constructible_v<T>) {
 					//копирую элементы до pos
 					std::uninitialized_move(begin(), const_cast<T*>(pos), new_data.GetAddress());
+					before_pos_is_initialized = true;
 					//и после pos
 					std::uninitialized_move(const_cast<T*>(pos), end(), iter + 1);
 				}
 				else {
 					//копирую элементы до pos
 					std::uninitialized_copy(begin(), const_cast<T*>(pos), new_data.GetAddress());
+					before_pos_is_initialized = true;
 					//и после pos
 					std::uninitialized_copy(const_cast<T*>(pos), end(), iter + 1);
 				}
 			}
 			catch (...) {
+				//если бросилось исключение - это в любом случае удалять
 				std::destroy_at(iter);
+				//если падает std::uninitialized до pos, то ничего делать не надо
+				//std::uninitialized сам удаляет при исключении все, что наинициализировал
+				//Но если std::uninitialized до pos инициализировался и исключение было 
+				//на std::uninitialized после pos, то автоматом удалится только то, 
+				//что после pos. В таком случае вручную удаляем до pos
+				if (before_pos_is_initialized) {
+					std::destroy(new_data.GetAddress(), iter);
+				}
 				throw;
 			}
 			data_.Swap(new_data);
